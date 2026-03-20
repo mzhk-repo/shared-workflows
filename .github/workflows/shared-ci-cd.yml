@@ -50,7 +50,7 @@ on:
 
 permissions:
   contents: read
-  packages: write # Додано write для пушу в GitHub Container Registry
+  packages: write
   pull-requests: read
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
-      packages: write # Додано write
+      packages: write
       pull-requests: read
     steps:
       - name: Checkout
@@ -70,7 +70,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Запускається лише якщо в репо є bash-скрипти
       - name: Run ShellCheck
+        if: hashFiles('scripts/**/*.sh') != ''
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: ./scripts
@@ -125,14 +127,31 @@ jobs:
           path: trivy-report.txt
           if-no-files-found: warn
 
+      # Визначаємо ім'я compose-файлу (підтримка docker-compose.yaml та docker-compose.yml)
+      - name: Detect compose file
+        id: compose
+        run: |
+          if [[ -f "docker-compose.yaml" ]]; then
+            echo "file=docker-compose.yaml" >> "$GITHUB_OUTPUT"
+          elif [[ -f "docker-compose.yml" ]]; then
+            echo "file=docker-compose.yml" >> "$GITHUB_OUTPUT"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Опціонально: копіюємо .env.example якщо він є
       - name: Prepare env file for compose validation
+        if: hashFiles('.env.example') != ''
         run: cp .env.example .env
 
       - name: Validate compose config
-        run: docker compose -f docker-compose.yaml config --quiet
+        if: steps.compose.outputs.file != ''
+        run: docker compose -f ${{ steps.compose.outputs.file }} config --quiet
 
+      # Опціонально: скрипт check-ports-policy.sh якщо він є в репо
       - name: Check ports policy
-        run: bash ./scripts/check-ports-policy.sh docker-compose.yaml
+        if: steps.compose.outputs.file != '' && hashFiles('scripts/check-ports-policy.sh') != ''
+        run: bash ./scripts/check-ports-policy.sh ${{ steps.compose.outputs.file }}
 
       - name: Dependency review
         if: github.event_name == 'pull_request'
@@ -144,22 +163,22 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Використовує вбудований токен GitHub
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
         if: inputs.build_and_push_docker == true
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name == 'push' }} # Пушити тільки якщо це не PR
+          push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}:${{ github.sha }},ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}:latest
 
   cd-deploy:
     name: cd-deploy
     needs: ci-checks
     if: |
-      inputs.deploy == true && 
-      github.event_name == 'push' && 
+      inputs.deploy == true &&
+      github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -189,7 +208,6 @@ jobs:
             fi
           done
 
-      # Налаштування SSH однакове для Docker і для Ansible
       - name: Configure SSH key and known_hosts
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
@@ -203,7 +221,6 @@ jobs:
           printf '%s %s\n' "$SERVER_HOST" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      # Підключення до Tailscale однакове для обох
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
@@ -238,11 +255,28 @@ jobs:
           cd "$DEPLOY_PROJECT_DIR"
           git fetch --all --prune
           git checkout "$DEPLOY_REF"
-          bash ./scripts/verify-env.sh .env
-          bash ./scripts/init-volumes.sh .env
-          docker compose -f docker-compose.yaml up -d --remove-orphans
-          bash ./scripts/apply-matomo-config.sh .env
-          docker compose -f docker-compose.yaml ps
+
+          # Автоматичне визначення compose-файлу
+          compose_file=""
+          if [[ -f "docker-compose.yaml" ]]; then
+            compose_file="docker-compose.yaml"
+          elif [[ -f "docker-compose.yml" ]]; then
+            compose_file="docker-compose.yml"
+          else
+            echo "ERROR: No docker-compose file found in $DEPLOY_PROJECT_DIR"
+            exit 1
+          fi
+
+          # Опціональні скрипти: виконуються лише якщо файл існує
+          [[ -f "./scripts/verify-env.sh" ]] && bash ./scripts/verify-env.sh .env
+          [[ -f "./scripts/init-volumes.sh" ]] && bash ./scripts/init-volumes.sh .env
+
+          docker compose -f "$compose_file" up -d --remove-orphans
+
+          # Опціональні пост-деплой скрипти
+          [[ -f "./scripts/apply-matomo-config.sh" ]] && bash ./scripts/apply-matomo-config.sh .env
+
+          docker compose -f "$compose_file" ps
           EOF
 
       # --- ЛОГІКА З ANSIBLE ---
@@ -258,17 +292,17 @@ jobs:
         if: inputs.use_ansible == true
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-          APP_VERSION: ${{ github.sha }} 
+          APP_VERSION: ${{ github.sha }}
         run: |
           echo "Встановлюємо Ansible..."
           sudo apt update && sudo apt install -y ansible
-          
+
           echo "$ANSIBLE_VAULT_PASSWORD" > vault_pass.txt
-          
+
           echo "Запускаємо Ansible плейбук для ${{ inputs.environment_name }}..."
           ansible-playbook -i infra/ansible/inventories/${{ inputs.environment_name }} \
                            infra/ansible/deploy-app.yml \
                            --vault-password-file vault_pass.txt \
                            -e "app_version=$APP_VERSION deploy_dir=${{ secrets.DEPLOY_PROJECT_DIR }}"
-                           
+
           rm vault_pass.txt
