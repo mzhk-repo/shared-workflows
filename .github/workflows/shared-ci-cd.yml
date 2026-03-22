@@ -65,7 +65,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -86,7 +86,7 @@ jobs:
           fi
           for file in "${files[@]}"; do
             echo "Linting $file"
-            docker run --rm -i hadolint/hadolint:latest hadolint - < "$file"
+            docker run --rm -i hadolint/hadolint@v2 hadolint - < "$file"
           done
 
       - name: Run Gitleaks
@@ -97,7 +97,7 @@ jobs:
           fi
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest \
+            zricethezav/gitleaks@v8 \
             detect --source=/repo --redact -v --exit-code=1 $config_arg
 
       - name: Run Trivy filesystem scan
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload Trivy report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: trivy-report-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.environment_name }}
           path: trivy-report.txt
@@ -164,7 +164,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: inputs.build_and_push_docker == true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -172,7 +172,7 @@ jobs:
 
       - name: Build and push Docker image
         if: inputs.build_and_push_docker == true
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ github.event_name == 'push' || github.event_name == 'release' }}
@@ -197,7 +197,7 @@ jobs:
     environment: ${{ inputs.environment_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate required secrets
         env:
@@ -231,7 +231,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
+        uses: tailscale/github-action@v4.1.2
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -280,8 +280,7 @@ jobs:
           [[ -f "./scripts/verify-env.sh" ]] && bash ./scripts/verify-env.sh .env
           [[ -f "./scripts/init-volumes.sh" ]] && bash ./scripts/init-volumes.sh .env
 
-          docker compose -f "$compose_file" pull --quiet
-          docker compose -f "$compose_file" up -d --remove-orphans --force-recreate
+          docker compose -f "$compose_file" up -d --remove-orphans --build
 
           # Опціональні пост-деплой скрипти
           [[ -f "./scripts/apply-matomo-config.sh" ]] && bash ./scripts/apply-matomo-config.sh .env
@@ -292,7 +291,7 @@ jobs:
       # --- ЛОГІКА З ANSIBLE ---
       - name: Checkout Ansible Repo
         if: inputs.use_ansible == true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: 'YOUR_ORGANIZATION/ansible-infrastructure'
           token: ${{ secrets.INFRA_REPO_PAT }}
