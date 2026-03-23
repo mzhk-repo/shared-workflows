@@ -27,6 +27,11 @@ on:
         description: 'Назва Docker-образу (наприклад, my-app)'
         required: false
         type: string
+      orchestration_script_path:
+        description: 'Опційний шлях до локального скрипта-оркестратора в репозиторії (виконується на сервері перед deploy)'
+        required: false
+        type: string
+        default: 'scripts/deploy-orchestrator.sh'
     secrets:
       TS_OAUTH_CLIENT_ID:
         required: false
@@ -234,13 +239,14 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
           DEPLOY_REF: ${{ github.sha }}
+          ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
         run: |
           set -euo pipefail
           target_path="${DEPLOY_PROJECT_DIR}"
 
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' bash -s" <<'EOF'
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' bash -s" <<'EOF'
           set -euo pipefail
           if [[ -z "${DEPLOY_PROJECT_DIR:-}" ]]; then
             echo "ERROR: DEPLOY_PROJECT_DIR is empty"
@@ -263,6 +269,15 @@ jobs:
           else
             echo "ERROR: No docker-compose file found in $DEPLOY_PROJECT_DIR"
             exit 1
+          fi
+
+          # Опціонально: єдиний скрипт оркестрації repo-specific кроків
+          if [[ -n "${ORCHESTRATION_SCRIPT_PATH:-}" && -f "${ORCHESTRATION_SCRIPT_PATH}" ]]; then
+            chmod +x "${ORCHESTRATION_SCRIPT_PATH}" || true
+            echo "Running orchestration script: ${ORCHESTRATION_SCRIPT_PATH}"
+            bash "${ORCHESTRATION_SCRIPT_PATH}"
+          else
+            echo "No orchestration script found at '${ORCHESTRATION_SCRIPT_PATH:-}', skipping"
           fi
 
           docker compose -f "$compose_file" up -d --remove-orphans --build

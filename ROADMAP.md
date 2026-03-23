@@ -30,11 +30,9 @@ SSH_HOST_KEY_PUB
 
 [ ] 2.1. Цільові директорії: Опрацювати наступний список локальних шляхів по черзі, не всі одразу:
 
-/home/pinokew/cloudflare-tunnel
+✅ /home/pinokew/cloudflare-tunnel
 
-/home/pinokew/Dspace
-
-/home/pinokew/kdv-integrator/kdv-integrator-event
+✅ /home/pinokew/Dspace/DSpace-docker
 
 /home/pinokew/Koha/koha-delpoy
 
@@ -43,6 +41,8 @@ SSH_HOST_KEY_PUB
 /home/pinokew/Traefik
 
 /home/pinokew/victoriametrics-grafana
+
+/home/pinokew/kdv-integrator/kdv-integrator-event
 
 /home/pinokew/Koha/koha-docker-build
 
@@ -53,6 +53,8 @@ SSH_HOST_KEY_PUB
 Перевірити наявність старих конфігурацій у .github/workflows/*.yml.
 
 Перед видаленням старих workflow обов'язково проаналізувати `.github/workflows/` на наявність існуючих патернів, кастомних умов та скриптів перевірки/деплою, які мають бути перенесені в локальний `main.yml`.
+
+Окремо проаналізувати наявність pre-deploy/post-deploy скриптів і сформувати/оновити єдиний repo-specific скрипт оркестрації (рекомендований шлях: `scripts/deploy-orchestrator.sh`).
 
 Визначити ім'я репозиторію на GitHub (з файлу .git/config або командою git remote get-url origin).
 
@@ -135,7 +137,11 @@ jobs:
 
 Примітка: для суворої перевірки саме формату vx.x.x варто додати regex-перевірку тега (наприклад, ^v[0-9]+\.[0-9]+\.[0-9]+$) у кроці валідації всередині пайплайну.
 
-Важливо: опціональні скрипти (`verify-env.sh`, `init-volumes.sh`, `apply-matomo-config.sh` та інші repo-specific кроки) повинні викликатися у локальних `.github/workflows/main.yml` репозиторіїв, а не в `shared-ci-cd.yml`.
+Важливо: repo-specific кроки (`verify-env.sh`, `patch-local.cfg.sh`, `init-volumes.sh` та інші) потрібно консолідувати в єдиний скрипт оркестрації (рекомендовано `scripts/deploy-orchestrator.sh`), який викликається через `shared-ci-cd.yml` опційно.
+
+Оновлена модель опціональних скриптів: локальний `main.yml` не запускає repo-specific скрипти окремими job (щоб не хардкодити тулзи типу `actions/checkout`), а лише передає `orchestration_script_path` у reusable workflow. У `shared-ci-cd.yml` цей скрипт викликається опційно (тільки якщо файл існує), інакше крок пропускається.
+
+Правило централізації тулзів: усі версії GitHub Actions/CI тулзів (`actions/checkout`, `docker/*`, `tailscale/*`, `trivy`, `gitleaks` тощо) мають керуватися в `shared-workflows`; у локальних репозиторіях не хардкодимо ці тулзи, локальний `main.yml` лише оркеструє виклики reusable workflow з `shared-workflows`.
 
 Правило синхронізації шаблону: якщо змінюємо будь-яку логіку в локальному `.github/workflows/main.yml`, таку саму зміну потрібно внести і в `/home/pinokew/shared-workflows/main.example.yml`.
 
