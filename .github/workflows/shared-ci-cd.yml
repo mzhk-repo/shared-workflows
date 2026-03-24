@@ -56,6 +56,10 @@ on:
         required: false
       ANSIBLE_VAULT_PASSWORD:
         required: false
+      GHCR_PULL_USERNAME:
+        required: false
+      GHCR_PULL_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -249,8 +253,10 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
           DEPLOY_REF: ${{ github.sha }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME_DEFAULT: ${{ github.actor }}
+          GHCR_TOKEN_DEFAULT: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
         run: |
           set -euo pipefail
@@ -258,7 +264,7 @@ jobs:
 
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' GHCR_USERNAME='${GHCR_USERNAME}' GHCR_TOKEN='${GHCR_TOKEN}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' bash -s" <<'EOF'
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' GHCR_USERNAME_DEFAULT='${GHCR_USERNAME_DEFAULT}' GHCR_TOKEN_DEFAULT='${GHCR_TOKEN_DEFAULT}' GHCR_PULL_USERNAME='${GHCR_PULL_USERNAME}' GHCR_PULL_TOKEN='${GHCR_PULL_TOKEN}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' bash -s" <<'EOF'
           set -euo pipefail
           if [[ -z "${DEPLOY_PROJECT_DIR:-}" ]]; then
             echo "ERROR: DEPLOY_PROJECT_DIR is empty"
@@ -285,11 +291,21 @@ jobs:
 
           # Якщо compose використовує GHCR-образи, авторизуємося перед pull/up
           if grep -q "ghcr.io/" "$compose_file"; then
-            if [[ -z "${GHCR_USERNAME:-}" || -z "${GHCR_TOKEN:-}" ]]; then
+            ghcr_username="${GHCR_USERNAME_DEFAULT:-}"
+            ghcr_token="${GHCR_TOKEN_DEFAULT:-}"
+            if [[ -n "${GHCR_PULL_TOKEN:-}" ]]; then
+              if [[ -z "${GHCR_PULL_USERNAME:-}" ]]; then
+                echo "ERROR: GHCR_PULL_USERNAME is required when GHCR_PULL_TOKEN is set"
+                exit 1
+              fi
+              ghcr_username="${GHCR_PULL_USERNAME}"
+              ghcr_token="${GHCR_PULL_TOKEN}"
+            fi
+            if [[ -z "${ghcr_username:-}" || -z "${ghcr_token:-}" ]]; then
               echo "ERROR: GHCR credentials are missing for private image pull"
               exit 1
             fi
-            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+            echo "${ghcr_token}" | docker login ghcr.io -u "${ghcr_username}" --password-stdin
           fi
 
           # Опціонально: єдиний скрипт оркестрації repo-specific кроків
