@@ -1,4 +1,4 @@
-name: Shared CI/CD Pipeline
+name: Shared CI/CD Pipeline (Dispatcher)
 
 on:
   workflow_call:
@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       use_ansible:
-        description: 'Чи використовувати Ansible для деплою (якщо false - використовує bash скрипти/docker-compose)'
+        description: 'false: legacy compose path, true: swarm+sops path'
         required: false
         type: boolean
         default: false
@@ -37,6 +37,11 @@ on:
         required: false
         type: string
         default: 'scripts/deploy-orchestrator.sh'
+      infra_repo_path:
+        description: 'Шлях до Ansible інфраструктурного репозиторію на віддаленому сервері'
+        required: false
+        type: string
+        default: '/opt/Ansible'
     secrets:
       TS_OAUTH_CLIENT_ID:
         required: false
@@ -54,6 +59,8 @@ on:
         required: false
       INFRA_REPO_PAT:
         required: false
+      SOPS_AGE_KEY:
+        required: false
       ANSIBLE_VAULT_PASSWORD:
         required: false
       GHCR_PULL_USERNAME:
@@ -67,285 +74,44 @@ permissions:
   pull-requests: read
 
 jobs:
-  ci-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    concurrency:
-      group: ci-checks-${{ github.ref }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      packages: write
-      pull-requests: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
+  legacy-compose:
+    if: inputs.use_ansible == false
+    uses: ./.github/workflows/shared-ci-cd-compose.yml
+    with:
+      environment_name: ${{ inputs.environment_name }}
+      deploy: ${{ inputs.deploy }}
+      build_and_push_docker: ${{ inputs.build_and_push_docker }}
+      push_docker_image: ${{ inputs.push_docker_image }}
+      docker_image_name: ${{ inputs.docker_image_name }}
+      orchestration_script_path: ${{ inputs.orchestration_script_path }}
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
+      DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+      GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+      GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
 
-      - name: Run Hadolint on Dockerfiles
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(find . -type f \( -name 'Dockerfile' -o -name '*.Dockerfile' \))
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No Dockerfiles found, skipping hadolint"
-            exit 0
-          fi
-          for file in "${files[@]}"; do
-            echo "Linting $file"
-            docker run --rm -i hadolint/hadolint:latest hadolint - < "$file"
-          done
-
-      - name: Run Gitleaks
-        run: |
-          config_arg=""
-          if [[ -f ".gitleaks.toml" ]]; then
-            config_arg="--config=/repo/.gitleaks.toml"
-          fi
-          docker run --rm \
-            -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest \
-            detect --source=/repo --redact -v --exit-code=1 $config_arg
-
-      - name: Dependency review
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
-
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,misconfig,secret
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: table
-          output: trivy-report.txt
-          exit-code: '1'
-
-      - name: Print Trivy report
-        if: always()
-        shell: bash
-        run: |
-          if [[ -f trivy-report.txt ]]; then
-            echo "Trivy report:"
-            cat trivy-report.txt
-          else
-            echo "Trivy did not generate a report file."
-          fi
-
-      - name: Upload Trivy report artifact
-        if: always()
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: trivy-report-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.environment_name }}
-          path: trivy-report.txt
-          if-no-files-found: warn
-
-      # Визначаємо ім'я compose-файлу (підтримка docker-compose.yaml та docker-compose.yml)
-      - name: Detect compose file
-        id: compose
-        run: |
-          if [[ -f "docker-compose.yaml" ]]; then
-            echo "file=docker-compose.yaml" >> "$GITHUB_OUTPUT"
-          elif [[ -f "docker-compose.yml" ]]; then
-            echo "file=docker-compose.yml" >> "$GITHUB_OUTPUT"
-          else
-            echo "file=" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Опціонально: копіюємо .env.example якщо він є
-      - name: Prepare env file for compose validation
-        if: hashFiles('.env.example') != ''
-        run: cp .env.example .env
-
-      - name: Validate compose config
-        if: steps.compose.outputs.file != ''
-        run: docker compose -f ${{ steps.compose.outputs.file }} config --quiet
-
-      - name: Log in to GitHub Container Registry
-        if: inputs.build_and_push_docker == true && (inputs.deploy || inputs.push_docker_image)
-        uses: docker/login-action@v4.0.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        if: inputs.build_and_push_docker == true
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=sha,prefix=sha-
-
-      - name: Build and push Docker image
-        if: inputs.build_and_push_docker == true
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: ${{ inputs.deploy || inputs.push_docker_image }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  cd-deploy:
-    name: cd-deploy
-    needs: ci-checks
-    if: inputs.deploy == true
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    concurrency:
-      group: cd-deploy-${{ inputs.environment_name }}
-      cancel-in-progress: false
-    environment: ${{ inputs.environment_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Validate required secrets
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
-          DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
-        run: |
-          set -euo pipefail
-          # TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET — org-level secrets, validated by Tailscale action itself
-          for key in SERVER_HOST SERVER_USER SERVER_SSH_KEY SSH_HOST_KEY_PUB DEPLOY_PROJECT_DIR; do
-            if [[ -z "${!key:-}" ]]; then
-              echo "ERROR: required secret is missing: $key"
-              echo "HINT: check repo/environment secrets and organization secret visibility for this repository"
-              exit 1
-            fi
-          done
-
-      - name: Configure SSH key and known_hosts
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          umask 177
-          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
-          printf '%s %s\n' "$SERVER_HOST" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v4.1.2
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
-      # --- ЛОГІКА БЕЗ ANSIBLE (DOCKER COMPOSE) ---
-      - name: Deploy on remote host (Docker Compose)
-        if: inputs.use_ansible == false
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
-          DEPLOY_REF: ${{ github.sha }}
-          GHCR_USERNAME_DEFAULT: ${{ github.actor }}
-          GHCR_TOKEN_DEFAULT: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
-        run: |
-          set -euo pipefail
-          target_path="${DEPLOY_PROJECT_DIR}"
-
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
-            "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' GHCR_USERNAME_DEFAULT='${GHCR_USERNAME_DEFAULT}' GHCR_TOKEN_DEFAULT='${GHCR_TOKEN_DEFAULT}' GHCR_PULL_USERNAME='${GHCR_PULL_USERNAME}' GHCR_PULL_TOKEN='${GHCR_PULL_TOKEN}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' bash -s" <<'EOF'
-          set -euo pipefail
-          if [[ -z "${DEPLOY_PROJECT_DIR:-}" ]]; then
-            echo "ERROR: DEPLOY_PROJECT_DIR is empty"
-            exit 1
-          fi
-          if [[ ! -d "$DEPLOY_PROJECT_DIR/.git" ]]; then
-            echo "ERROR: DEPLOY_PROJECT_DIR is not a git repository: $DEPLOY_PROJECT_DIR"
-            exit 1
-          fi
-          cd "$DEPLOY_PROJECT_DIR"
-          git fetch --all --prune
-          git checkout "$DEPLOY_REF"
-
-          # Автоматичне визначення compose-файлу
-          compose_file=""
-          if [[ -f "docker-compose.yaml" ]]; then
-            compose_file="docker-compose.yaml"
-          elif [[ -f "docker-compose.yml" ]]; then
-            compose_file="docker-compose.yml"
-          else
-            echo "ERROR: No docker-compose file found in $DEPLOY_PROJECT_DIR"
-            exit 1
-          fi
-
-          # Якщо compose використовує GHCR-образи, авторизуємося перед pull/up
-          if grep -q "ghcr.io/" "$compose_file"; then
-            ghcr_username="${GHCR_USERNAME_DEFAULT:-}"
-            ghcr_token="${GHCR_TOKEN_DEFAULT:-}"
-            if [[ -n "${GHCR_PULL_TOKEN:-}" ]]; then
-              if [[ -z "${GHCR_PULL_USERNAME:-}" ]]; then
-                echo "ERROR: GHCR_PULL_USERNAME is required when GHCR_PULL_TOKEN is set"
-                exit 1
-              fi
-              ghcr_username="${GHCR_PULL_USERNAME}"
-              ghcr_token="${GHCR_PULL_TOKEN}"
-            fi
-            if [[ -z "${ghcr_username:-}" || -z "${ghcr_token:-}" ]]; then
-              echo "ERROR: GHCR credentials are missing for private image pull"
-              exit 1
-            fi
-            echo "${ghcr_token}" | docker login ghcr.io -u "${ghcr_username}" --password-stdin
-          fi
-
-          # Опціонально: єдиний скрипт оркестрації repo-specific кроків
-          if [[ -n "${ORCHESTRATION_SCRIPT_PATH:-}" && -f "${ORCHESTRATION_SCRIPT_PATH}" ]]; then
-            chmod +x "${ORCHESTRATION_SCRIPT_PATH}" || true
-            echo "Running orchestration script: ${ORCHESTRATION_SCRIPT_PATH}"
-            bash "${ORCHESTRATION_SCRIPT_PATH}"
-          else
-            echo "No orchestration script found at '${ORCHESTRATION_SCRIPT_PATH:-}', skipping"
-          fi
-
-          docker compose -f "$compose_file" up -d --remove-orphans --build
-
-          docker compose -f "$compose_file" ps
-          EOF
-
-      # --- ЛОГІКА З ANSIBLE ---
-      - name: Checkout Ansible Repo
-        if: inputs.use_ansible == true
-        uses: actions/checkout@v6
-        with:
-          repository: 'YOUR_ORGANIZATION/ansible-infrastructure'
-          token: ${{ secrets.INFRA_REPO_PAT }}
-          path: 'infra'
-
-      - name: Deploy with Ansible
-        if: inputs.use_ansible == true
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-          APP_VERSION: ${{ github.sha }}
-        run: |
-          echo "Встановлюємо Ansible..."
-          sudo apt update && sudo apt install -y ansible
-
-          echo "$ANSIBLE_VAULT_PASSWORD" > vault_pass.txt
-
-          echo "Запускаємо Ansible плейбук для ${{ inputs.environment_name }}..."
-          ansible-playbook -i infra/ansible/inventories/${{ inputs.environment_name }} \
-                           infra/ansible/deploy-app.yml \
-                           --vault-password-file vault_pass.txt \
-                           -e "app_version=$APP_VERSION deploy_dir=${{ secrets.DEPLOY_PROJECT_DIR }}"
-
-          rm vault_pass.txt
+  swarm-sops:
+    if: inputs.use_ansible == true
+    uses: ./.github/workflows/shared-ci-cd-swarm.yml
+    with:
+      environment_name: ${{ inputs.environment_name }}
+      deploy: ${{ inputs.deploy }}
+      build_and_push_docker: ${{ inputs.build_and_push_docker }}
+      push_docker_image: ${{ inputs.push_docker_image }}
+      docker_image_name: ${{ inputs.docker_image_name }}
+      orchestration_script_path: ${{ inputs.orchestration_script_path }}
+      infra_repo_path: ${{ inputs.infra_repo_path }}
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
+      DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+      SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}

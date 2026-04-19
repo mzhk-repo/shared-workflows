@@ -1,0 +1,374 @@
+name: Shared CI/CD Pipeline (Swarm + SOPS)
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        description: 'Назва середовища (наприклад, production, development)'
+        required: false
+        type: string
+        default: 'development'
+      deploy:
+        description: 'Чи запускати деплой (true/false)'
+        required: false
+        type: boolean
+        default: true
+      build_and_push_docker:
+        description: 'Чи будувати і пушити Docker-образ у GHCR'
+        required: false
+        type: boolean
+        default: false
+      push_docker_image:
+        description: 'Чи пушити Docker-образ навіть якщо deploy=false'
+        required: false
+        type: boolean
+        default: false
+      docker_image_name:
+        description: 'Назва Docker-образу (наприклад, my-app)'
+        required: false
+        type: string
+      orchestration_script_path:
+        description: 'Опційний шлях до локального скрипта-оркестратора в репозиторії (виконується на сервері перед deploy)'
+        required: false
+        type: string
+        default: 'scripts/deploy-orchestrator.sh'
+      infra_repo_path:
+        description: 'Шлях до Ansible інфраструктурного репозиторію на віддаленому сервері'
+        required: false
+        type: string
+        default: '/opt/Ansible'
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: false
+      TS_OAUTH_SECRET:
+        required: false
+      SERVER_HOST:
+        required: false
+      SERVER_USER:
+        required: false
+      SERVER_SSH_KEY:
+        required: false
+      SSH_HOST_KEY_PUB:
+        required: false
+      DEPLOY_PROJECT_DIR:
+        required: false
+      SOPS_AGE_KEY:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: read
+
+jobs:
+  ci-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-checks-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Hadolint on Dockerfiles
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find . -type f \( -name 'Dockerfile' -o -name '*.Dockerfile' \))
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Dockerfiles found, skipping hadolint"
+            exit 0
+          fi
+          for file in "${files[@]}"; do
+            echo "Linting $file"
+            docker run --rm -i hadolint/hadolint:latest hadolint - < "$file"
+          done
+
+      - name: Run Gitleaks
+        run: |
+          config_arg=""
+          if [[ -f ".gitleaks.toml" ]]; then
+            config_arg="--config=/repo/.gitleaks.toml"
+          fi
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            zricethezav/gitleaks:latest \
+            detect --source=/repo --redact -v --exit-code=1 $config_arg
+
+      - name: Dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          output: trivy-report.txt
+          exit-code: '1'
+
+      - name: Print Trivy report
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f trivy-report.txt ]]; then
+            echo "Trivy report:"
+            cat trivy-report.txt
+          else
+            echo "Trivy did not generate a report file."
+          fi
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: trivy-report-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.environment_name }}
+          path: trivy-report.txt
+          if-no-files-found: warn
+
+      - name: Detect compose file
+        id: compose
+        run: |
+          if [[ -f "docker-compose.yaml" ]]; then
+            echo "file=docker-compose.yaml" >> "$GITHUB_OUTPUT"
+          elif [[ -f "docker-compose.yml" ]]; then
+            echo "file=docker-compose.yml" >> "$GITHUB_OUTPUT"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare env file for compose validation
+        if: hashFiles('.env.example') != ''
+        run: cp .env.example .env
+
+      - name: Validate compose config
+        if: steps.compose.outputs.file != ''
+        run: docker compose -f ${{ steps.compose.outputs.file }} config --quiet
+
+      - name: Log in to GitHub Container Registry
+        if: inputs.build_and_push_docker == true && (inputs.deploy || inputs.push_docker_image)
+        uses: docker/login-action@v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        if: inputs.build_and_push_docker == true
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,prefix=sha-
+
+      - name: Build and push Docker image
+        if: inputs.build_and_push_docker == true
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ inputs.deploy || inputs.push_docker_image }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  cd-deploy:
+    name: cd-deploy
+    needs: ci-checks
+    if: inputs.deploy == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: cd-deploy-${{ inputs.environment_name }}
+      cancel-in-progress: false
+    environment: ${{ inputs.environment_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate required secrets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
+          DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          for key in SERVER_HOST SERVER_USER SERVER_SSH_KEY SSH_HOST_KEY_PUB DEPLOY_PROJECT_DIR; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "ERROR: required secret is missing: $key"
+              echo "HINT: check repo/environment secrets and organization secret visibility for this repository"
+              exit 1
+            fi
+          done
+
+      - name: Configure SSH key and known_hosts
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          umask 177
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s %s\n' "$SERVER_HOST" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4.1.2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Validate required SOPS secret
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SOPS_AGE_KEY:-}" ]]; then
+            echo "ERROR: required secret is missing: SOPS_AGE_KEY"
+            exit 1
+          fi
+
+      - name: Install SOPS and age
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64 -o /tmp/sops
+          chmod +x /tmp/sops
+          sudo mv /tmp/sops /usr/local/bin/sops
+
+          curl -fsSL https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz -o /tmp/age.tar.gz
+          tar -xzf /tmp/age.tar.gz -C /tmp
+          sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
+          rm -rf /tmp/age /tmp/age.tar.gz
+
+          sops --version
+          age --version
+
+      - name: Decrypt env file with SOPS
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+        run: |
+          set -euo pipefail
+          case "${ENVIRONMENT_NAME}" in
+            development|dev)
+              ENC_FILE="env.dev.enc"
+              ;;
+            production|prod)
+              ENC_FILE="env.prod.enc"
+              ;;
+            *)
+              echo "ERROR: unsupported environment_name='${ENVIRONMENT_NAME}'"
+              exit 1
+              ;;
+          esac
+
+          if [[ ! -f "${ENC_FILE}" ]]; then
+            echo "ERROR: encrypted env file not found: ${ENC_FILE}"
+            exit 1
+          fi
+
+          sops --decrypt --input-type dotenv --output-type dotenv "${ENC_FILE}" > /tmp/env.decrypted
+          chmod 600 /tmp/env.decrypted
+
+      - name: Deploy on remote host (Swarm/SOPS orchestration)
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+          DEPLOY_REF: ${{ github.sha }}
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+          ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
+          INFRA_REPO_PATH: ${{ inputs.infra_repo_path }}
+        run: |
+          set -euo pipefail
+
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            /tmp/env.decrypted \
+            "${SERVER_USER}@${SERVER_HOST}:/tmp/env.decrypted"
+
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' bash -s" <<'EOF'
+          set -euo pipefail
+          trap 'rm -f /tmp/env.decrypted /tmp/deploy-manifest.yml' EXIT
+
+          if [[ -z "${DEPLOY_PROJECT_DIR:-}" ]]; then
+            echo "ERROR: DEPLOY_PROJECT_DIR is empty"
+            exit 1
+          fi
+          if [[ ! -d "${DEPLOY_PROJECT_DIR}/.git" ]]; then
+            echo "ERROR: DEPLOY_PROJECT_DIR is not a git repository: ${DEPLOY_PROJECT_DIR}"
+            exit 1
+          fi
+          if [[ ! -f /tmp/env.decrypted ]]; then
+            echo "ERROR: /tmp/env.decrypted not found on remote host"
+            exit 1
+          fi
+
+          cd "${DEPLOY_PROJECT_DIR}"
+          git fetch --all --prune
+          git checkout "${DEPLOY_REF}"
+
+          if [[ -n "${ORCHESTRATION_SCRIPT_PATH:-}" && -f "${ORCHESTRATION_SCRIPT_PATH}" ]]; then
+            chmod +x "${ORCHESTRATION_SCRIPT_PATH}" || true
+            echo "Running orchestration script in swarm mode: ${ORCHESTRATION_SCRIPT_PATH}"
+            ORCHESTRATOR_MODE=swarm \
+            ORCHESTRATOR_ENV_FILE=/tmp/env.decrypted \
+            ENVIRONMENT_NAME="${ENVIRONMENT_NAME}" \
+            INFRA_REPO_PATH="${INFRA_REPO_PATH}" \
+            bash "${ORCHESTRATION_SCRIPT_PATH}"
+          else
+            echo "No orchestration script found at '${ORCHESTRATION_SCRIPT_PATH:-}', fallback to default swarm deploy"
+
+            compose_file=""
+            if [[ -f "docker-compose.yaml" ]]; then
+              compose_file="docker-compose.yaml"
+            elif [[ -f "docker-compose.yml" ]]; then
+              compose_file="docker-compose.yml"
+            else
+              echo "ERROR: No docker-compose file found in ${DEPLOY_PROJECT_DIR}"
+              exit 1
+            fi
+
+            if [[ ! -f "docker-compose.swarm.yml" ]]; then
+              echo "ERROR: docker-compose.swarm.yml not found for swarm deploy"
+              exit 1
+            fi
+
+            stack_name="$(basename "${DEPLOY_PROJECT_DIR}")"
+
+            docker compose --env-file /tmp/env.decrypted \
+              -f "${compose_file}" \
+              -f docker-compose.swarm.yml \
+              config > /tmp/deploy-manifest.yml
+
+            sed -i '/^name:/d' /tmp/deploy-manifest.yml
+            docker stack deploy -c /tmp/deploy-manifest.yml "${stack_name}"
+          fi
+          EOF
+
+      - name: Cleanup decrypted env file
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f /tmp/env.decrypted ]]; then
+            shred -u /tmp/env.decrypted || rm -f /tmp/env.decrypted
+          fi
