@@ -43,6 +43,8 @@ on:
         required: false
       SERVER_SSH_KEY:
         required: false
+      SERVER_SSH_PORT:
+        required: false
       SSH_HOST_KEY_PUB:
         required: false
       DEPLOY_PROJECT_DIR:
@@ -217,13 +219,19 @@ jobs:
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
           SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
           umask 177
+          ssh_port="${SERVER_SSH_PORT:-22}"
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
-          printf '%s %s\n' "$SERVER_HOST" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
+          if [[ "${ssh_port}" == "22" ]]; then
+            printf '%s %s\n' "$SERVER_HOST" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
+          else
+            printf '[%s]:%s %s\n' "$SERVER_HOST" "$ssh_port" "$SSH_HOST_KEY_PUB" > ~/.ssh/known_hosts
+          fi
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
       - name: Connect to Tailscale
@@ -237,6 +245,7 @@ jobs:
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
           DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
           DEPLOY_REF: ${{ github.sha }}
           GHCR_USERNAME_DEFAULT: ${{ github.actor }}
@@ -247,8 +256,9 @@ jobs:
         run: |
           set -euo pipefail
           target_path="${DEPLOY_PROJECT_DIR}"
+          ssh_port="${SERVER_SSH_PORT:-22}"
 
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+          ssh -p "${ssh_port}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
             "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${target_path}' GHCR_USERNAME_DEFAULT='${GHCR_USERNAME_DEFAULT}' GHCR_TOKEN_DEFAULT='${GHCR_TOKEN_DEFAULT}' GHCR_PULL_USERNAME='${GHCR_PULL_USERNAME}' GHCR_PULL_TOKEN='${GHCR_PULL_TOKEN}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' bash -s" <<'EOF'
           set -euo pipefail

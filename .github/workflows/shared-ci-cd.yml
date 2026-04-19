@@ -53,6 +53,8 @@ on:
         required: false
       SERVER_SSH_KEY:
         required: false
+      SERVER_SSH_PORT:
+        required: false
       SSH_HOST_KEY_PUB:
         required: false
       DEPLOY_PROJECT_DIR:
@@ -90,6 +92,7 @@ jobs:
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       SERVER_USER: ${{ secrets.SERVER_USER }}
       SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
       SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
       DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
       GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
@@ -112,6 +115,7 @@ jobs:
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       SERVER_USER: ${{ secrets.SERVER_USER }}
       SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
       SSH_HOST_KEY_PUB: ${{ secrets.SSH_HOST_KEY_PUB }}
       DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
       SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
