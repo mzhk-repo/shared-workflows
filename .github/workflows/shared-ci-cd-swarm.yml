@@ -245,6 +245,14 @@ jobs:
             echo "ERROR: required secret is missing: SOPS_AGE_KEY"
             exit 1
           fi
+          if [[ "${SOPS_AGE_KEY}" == age1* ]]; then
+            echo "ERROR: SOPS_AGE_KEY looks like a public recipient (age1...), expected private key (AGE-SECRET-KEY-...)"
+            exit 1
+          fi
+          if ! grep -q "AGE-SECRET-KEY-" <<< "${SOPS_AGE_KEY}"; then
+            echo "ERROR: SOPS_AGE_KEY does not contain AGE private key material"
+            exit 1
+          fi
 
       - name: Install SOPS and age
         run: |
@@ -285,7 +293,29 @@ jobs:
             exit 1
           fi
 
-          sops --decrypt --input-type dotenv --output-type dotenv "${ENC_FILE}" > /tmp/env.decrypted
+          private_key="$(printf '%s\n' "${SOPS_AGE_KEY}" | tr -d '\r' | awk '/^AGE-SECRET-KEY-/{print; exit}')"
+          if [[ -z "${private_key}" ]]; then
+            echo "ERROR: unable to parse AGE private key from SOPS_AGE_KEY"
+            exit 1
+          fi
+
+          secret_public_key="$(printf '%s\n' "${private_key}" | age-keygen -y)"
+          mapfile -t recipients < <(grep -E '^sops_age__list_[0-9]+__map_recipient=' "${ENC_FILE}" | cut -d= -f2-)
+          if [[ ${#recipients[@]} -gt 0 ]]; then
+            if ! printf '%s\n' "${recipients[@]}" | grep -Fxq "${secret_public_key}"; then
+              echo "ERROR: SOPS_AGE_KEY does not match recipients in ${ENC_FILE}"
+              echo "Secret public key: ${secret_public_key}"
+              echo "File recipients:"
+              printf '  - %s\n' "${recipients[@]}"
+              exit 1
+            fi
+          fi
+
+          key_file="/tmp/sops-age-key.txt"
+          printf '%s\n' "${SOPS_AGE_KEY}" | tr -d '\r' > "${key_file}"
+          chmod 600 "${key_file}"
+          SOPS_AGE_KEY_FILE="${key_file}" sops --decrypt --input-type dotenv --output-type dotenv "${ENC_FILE}" > /tmp/env.decrypted
+          shred -u "${key_file}" || rm -f "${key_file}"
           chmod 600 /tmp/env.decrypted
 
       - name: Deploy on remote host (Swarm/SOPS orchestration)
