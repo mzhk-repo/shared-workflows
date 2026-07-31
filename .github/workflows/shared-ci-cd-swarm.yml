@@ -37,6 +37,26 @@ on:
         required: false
         type: string
         default: '/opt/Ansible'
+      resolved_image_digest:
+        description: 'Опційний immutable image reference IMAGE@sha256:... для передачі в remote env contract'
+        required: false
+        type: string
+        default: ''
+      declared_deploy_ref:
+        description: 'Опційний exact control-plane Git SHA для remote checkout замість caller SHA'
+        required: false
+        type: string
+        default: ''
+      release_tag:
+        description: 'Опційний vX.Y.Z tag, який вмикає immutable release evidence'
+        required: false
+        type: string
+        default: ''
+      control_plane_sha:
+        description: 'Опційний exact control-plane SHA для release evidence'
+        required: false
+        type: string
+        default: ''
     secrets:
       TS_OAUTH_CLIENT_ID:
         required: false
@@ -73,6 +93,8 @@ jobs:
       contents: read
       packages: write
       pull-requests: read
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -179,6 +201,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and push Docker image
+        id: build
         if: inputs.build_and_push_docker == true
         uses: docker/build-push-action@v7
         with:
@@ -187,10 +210,80 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+  release-evidence:
+    name: Release evidence
+    if: inputs.release_tag != '' && inputs.build_and_push_docker == true
+    needs: ci-checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release metadata
+        env:
+          TAG: ${{ inputs.release_tag }}
+          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+          DIGEST: ${{ needs.ci-checks.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "${CONTROL_PLANE_SHA}" =~ ^[a-f0-9]{40}$ ]]
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
+          test -f "release/${TAG}.json"
+          node -e 'const m=require(`./release/${process.env.TAG}.json`); const p=require("./package.json"); if (m.version !== process.env.TAG || `v${p.version}` !== process.env.TAG || m.upstream?.tag !== "v1.1.5" || !/^[a-f0-9]{40}$/.test(m.upstream?.commit || "") || m.control_plane?.sha !== process.env.CONTROL_PLANE_SHA) process.exit(1)'
+      - name: Resolve immutable image reference
+        id: image
+        env:
+          DIGEST: ${{ needs.ci-checks.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          printf 'reference=ghcr.io/%s/%s@%s\n' '${{ github.repository_owner }}' '${{ inputs.docker_image_name }}' "${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Generate exact-digest Trivy report
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.image.outputs.reference }}
+          format: json
+          output: trivy-${{ inputs.release_tag }}.json
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.image.outputs.reference }}
+          format: cyclonedx-json
+          output-file: sbom-${{ inputs.release_tag }}.cdx.json
+      - name: Create evidence checksums
+        env:
+          IMAGE: ${{ steps.image.outputs.reference }}
+          CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+        run: |
+          set -euo pipefail
+          sha256sum "trivy-${{ inputs.release_tag }}.json" "sbom-${{ inputs.release_tag }}.cdx.json" > SHA256SUMS
+          printf 'image=%s\ncontrol_plane_sha=%s\nbuild_sha=%s\n' "$IMAGE" "$CONTROL_PLANE_SHA" "$GITHUB_SHA" > release-evidence.env
+          cat SHA256SUMS >> release-evidence.env
+      - name: Refuse release overwrite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ! gh release view '${{ inputs.release_tag }}' >/dev/null 2>&1
+      - name: Publish immutable release evidence
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          generate_release_notes: false
+          files: |
+            trivy-${{ inputs.release_tag }}.json
+            sbom-${{ inputs.release_tag }}.cdx.json
+            SHA256SUMS
+            release-evidence.env
+
   cd-deploy:
     name: cd-deploy
-    needs: ci-checks
-    if: inputs.deploy == true
+    needs: [ci-checks, release-evidence]
+    if: always() && inputs.deploy == true && needs.ci-checks.result == 'success' && (inputs.release_tag == '' || needs.release-evidence.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -217,6 +310,21 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Validate optional immutable deployment inputs
+        env:
+          RESOLVED_IMAGE_DIGEST: ${{ inputs.resolved_image_digest }}
+          DECLARED_DEPLOY_REF: ${{ inputs.declared_deploy_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RESOLVED_IMAGE_DIGEST}" && ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "ERROR: resolved_image_digest must be IMAGE@sha256:DIGEST"
+            exit 1
+          fi
+          if [[ -n "${DECLARED_DEPLOY_REF}" && ! "${DECLARED_DEPLOY_REF}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "ERROR: declared_deploy_ref must be a 40-character SHA"
+            exit 1
+          fi
 
       - name: Configure SSH key and known_hosts
         env:
@@ -332,10 +440,11 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
           DEPLOY_PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
-          DEPLOY_REF: ${{ github.sha }}
+          DEPLOY_REF: ${{ inputs.declared_deploy_ref != '' && inputs.declared_deploy_ref || github.sha }}
           ENVIRONMENT_NAME: ${{ inputs.environment_name }}
           ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
           INFRA_REPO_PATH: ${{ inputs.infra_repo_path }}
+          RESOLVED_IMAGE_DIGEST: ${{ inputs.resolved_image_digest }}
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -euo pipefail
@@ -355,7 +464,7 @@ jobs:
 
           ssh -p "${ssh_port}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' bash -s" <<'EOF'
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' RESOLVED_IMAGE_DIGEST='${RESOLVED_IMAGE_DIGEST}' bash -s" <<'EOF'
           set -euo pipefail
           trap 'rm -f /tmp/env.decrypted /tmp/deploy-manifest.yml /tmp/sops-age-key.txt' EXIT
 
@@ -370,6 +479,14 @@ jobs:
           if [[ ! -f /tmp/env.decrypted ]]; then
             echo "ERROR: /tmp/env.decrypted not found on remote host"
             exit 1
+          fi
+          if [[ -n "${RESOLVED_IMAGE_DIGEST:-}" ]]; then
+            if [[ ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
+              echo "ERROR: resolved_image_digest must be an immutable sha256 reference"
+              exit 1
+            fi
+            printf '\nSMTP2GRAPH_IMAGE_DIGEST=%s\n' "${RESOLVED_IMAGE_DIGEST}" >> /tmp/env.decrypted
+            chmod 600 /tmp/env.decrypted
           fi
 
           if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq "${DEPLOY_PROJECT_DIR}"; then

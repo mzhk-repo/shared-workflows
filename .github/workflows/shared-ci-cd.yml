@@ -42,6 +42,26 @@ on:
         required: false
         type: string
         default: '/opt/Ansible'
+      release_tag:
+        description: 'Опційний release tag vX.Y.Z для digest-scoped evidence'
+        required: false
+        type: string
+        default: ''
+      control_plane_sha:
+        description: 'Опційний exact control-plane SHA для release evidence і remote checkout'
+        required: false
+        type: string
+        default: ''
+      resolved_image_digest:
+        description: 'Опційний immutable image digest для remote deploy path'
+        required: false
+        type: string
+        default: ''
+      declared_deploy_ref:
+        description: 'Опційний exact Git SHA для remote checkout'
+        required: false
+        type: string
+        default: ''
     secrets:
       TS_OAUTH_CLIENT_ID:
         required: false
@@ -109,6 +129,10 @@ jobs:
       docker_image_name: ${{ inputs.docker_image_name }}
       orchestration_script_path: ${{ inputs.orchestration_script_path }}
       infra_repo_path: ${{ inputs.infra_repo_path }}
+      release_tag: ${{ inputs.release_tag }}
+      control_plane_sha: ${{ inputs.control_plane_sha }}
+      resolved_image_digest: ${{ inputs.resolved_image_digest }}
+      declared_deploy_ref: ${{ inputs.declared_deploy_ref }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
