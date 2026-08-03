@@ -52,8 +52,18 @@ on:
         required: false
         type: string
         default: ''
+      deployment_release_tag:
+        description: 'Опційний vX.Y.Z tag для remote production deployment contract'
+        required: false
+        type: string
+        default: ''
       control_plane_sha:
         description: 'Опційний exact control-plane SHA для release evidence'
+        required: false
+        type: string
+        default: ''
+      approval_context:
+        description: 'Опційний reviewed approval identifier for remote production deployment'
         required: false
         type: string
         default: ''
@@ -97,9 +107,10 @@ jobs:
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Run Hadolint on Dockerfiles
         run: |
@@ -111,7 +122,7 @@ jobs:
           fi
           for file in "${files[@]}"; do
             echo "Linting $file"
-            docker run --rm -i hadolint/hadolint:latest hadolint - < "$file"
+            docker run --rm -i hadolint/hadolint@sha256:9259e253a4e299b50c92006149dd3a171c7ea3c5bd36f060022b5d2c1ff0fbbe hadolint - < "$file"
           done
 
       - name: Run Gitleaks
@@ -122,15 +133,15 @@ jobs:
           fi
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest \
+            zricethezav/gitleaks@sha256:bf00b5e039f0fad4b32935dc5ec1e358f227ccd097bcb64b971f0331072fe2ae \
             detect --source=/repo --redact -v --exit-code=1 $config_arg
 
       - name: Dependency review
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           scan-type: fs
           scan-ref: .
@@ -155,7 +166,7 @@ jobs:
 
       - name: Upload Trivy report artifact
         if: always()
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: trivy-report-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.environment_name }}
           path: trivy-report.txt
@@ -178,11 +189,13 @@ jobs:
 
       - name: Validate compose config
         if: steps.compose.outputs.file != ''
-        run: docker compose -f ${{ steps.compose.outputs.file }} config --quiet
+        env:
+          COMPOSE_FILE: ${{ steps.compose.outputs.file }}
+        run: docker compose -f "${COMPOSE_FILE}" config --quiet
 
       - name: Log in to GitHub Container Registry
         if: inputs.build_and_push_docker == true && (inputs.deploy || inputs.push_docker_image)
-        uses: docker/login-action@v4.0.0
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -191,7 +204,7 @@ jobs:
       - name: Extract Docker metadata
         if: inputs.build_and_push_docker == true
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}
           tags: |
@@ -203,7 +216,7 @@ jobs:
       - name: Build and push Docker image
         id: build
         if: inputs.build_and_push_docker == true
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: ${{ inputs.deploy || inputs.push_docker_image }}
@@ -219,7 +232,9 @@ jobs:
       contents: write
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Validate release metadata
         env:
           TAG: ${{ inputs.release_tag }}
@@ -231,17 +246,20 @@ jobs:
           [[ "${CONTROL_PLANE_SHA}" =~ ^[a-f0-9]{40}$ ]]
           [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
           test -f "release/${TAG}.json"
+          # shellcheck disable=SC2016
+          # JavaScript uses process.env; shell expansion must stay disabled.
           node -e 'const m=require(`./release/${process.env.TAG}.json`); const p=require("./package.json"); if (m.version !== process.env.TAG || `v${p.version}` !== process.env.TAG || m.upstream?.tag !== "v1.1.5" || !/^[a-f0-9]{40}$/.test(m.upstream?.commit || "") || m.control_plane?.sha !== process.env.CONTROL_PLANE_SHA) process.exit(1)'
       - name: Resolve immutable image reference
         id: image
         env:
           DIGEST: ${{ needs.ci-checks.outputs.image_digest }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          IMAGE_NAME: ${{ inputs.docker_image_name }}
         run: |
           set -euo pipefail
-          printf 'reference=ghcr.io/%s/%s@%s\n' '${{ github.repository_owner }}' '${{ inputs.docker_image_name }}' "${DIGEST}" >> "$GITHUB_OUTPUT"
+          printf 'reference=ghcr.io/%s/%s@%s\n' "${IMAGE_OWNER}" "${IMAGE_NAME}" "${DIGEST}" >> "$GITHUB_OUTPUT"
       - name: Generate exact-digest Trivy report
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: ${{ steps.image.outputs.reference }}
           format: json
@@ -249,7 +267,7 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '0'
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ${{ steps.image.outputs.reference }}
           format: cyclonedx-json
@@ -258,19 +276,21 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.reference }}
           CONTROL_PLANE_SHA: ${{ inputs.control_plane_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          sha256sum "trivy-${{ inputs.release_tag }}.json" "sbom-${{ inputs.release_tag }}.cdx.json" > SHA256SUMS
+          sha256sum "trivy-${RELEASE_TAG}.json" "sbom-${RELEASE_TAG}.cdx.json" > SHA256SUMS
           printf 'image=%s\ncontrol_plane_sha=%s\nbuild_sha=%s\n' "$IMAGE" "$CONTROL_PLANE_SHA" "$GITHUB_SHA" > release-evidence.env
           cat SHA256SUMS >> release-evidence.env
       - name: Refuse release overwrite
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          ! gh release view '${{ inputs.release_tag }}' >/dev/null 2>&1
+          ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1
       - name: Publish immutable release evidence
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ inputs.release_tag }}
           generate_release_notes: false
@@ -292,7 +312,9 @@ jobs:
     environment: ${{ inputs.environment_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Validate required secrets
         env:
@@ -315,6 +337,10 @@ jobs:
         env:
           RESOLVED_IMAGE_DIGEST: ${{ inputs.resolved_image_digest }}
           DECLARED_DEPLOY_REF: ${{ inputs.declared_deploy_ref }}
+          DEPLOYMENT_RELEASE_TAG: ${{ inputs.deployment_release_tag }}
+          APPROVAL_CONTEXT: ${{ inputs.approval_context }}
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+          DEPLOY_ENABLED: ${{ inputs.deploy }}
         run: |
           set -euo pipefail
           if [[ -n "${RESOLVED_IMAGE_DIGEST}" && ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
@@ -324,6 +350,12 @@ jobs:
           if [[ -n "${DECLARED_DEPLOY_REF}" && ! "${DECLARED_DEPLOY_REF}" =~ ^[a-f0-9]{40}$ ]]; then
             echo "ERROR: declared_deploy_ref must be a 40-character SHA"
             exit 1
+          fi
+          if [[ "${ENVIRONMENT_NAME}" == "production" && "${DEPLOY_ENABLED}" == "true" ]]; then
+            [[ "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'ERROR: production deploy requires resolved_image_digest'; exit 1; }
+            [[ "${DEPLOYMENT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'ERROR: production deploy requires deployment_release_tag'; exit 1; }
+            [[ "${DECLARED_DEPLOY_REF}" =~ ^[a-f0-9]{40}$ ]] || { echo 'ERROR: production deploy requires declared_deploy_ref'; exit 1; }
+            [[ "${APPROVAL_CONTEXT}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$ ]] || { echo 'ERROR: production deploy requires approval_context'; exit 1; }
           fi
 
       - name: Configure SSH key and known_hosts
@@ -346,7 +378,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v4.1.2
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.2
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -445,6 +477,8 @@ jobs:
           ORCHESTRATION_SCRIPT_PATH: ${{ inputs.orchestration_script_path }}
           INFRA_REPO_PATH: ${{ inputs.infra_repo_path }}
           RESOLVED_IMAGE_DIGEST: ${{ inputs.resolved_image_digest }}
+          DEPLOYMENT_RELEASE_TAG: ${{ inputs.deployment_release_tag }}
+          APPROVAL_CONTEXT: ${{ inputs.approval_context }}
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -euo pipefail
@@ -464,7 +498,7 @@ jobs:
 
           ssh -p "${ssh_port}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' RESOLVED_IMAGE_DIGEST='${RESOLVED_IMAGE_DIGEST}' bash -s" <<'EOF'
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' RESOLVED_IMAGE_DIGEST='${RESOLVED_IMAGE_DIGEST}' DEPLOYMENT_RELEASE_TAG='${DEPLOYMENT_RELEASE_TAG}' APPROVAL_CONTEXT='${APPROVAL_CONTEXT}' bash -s" <<'EOF'
           set -euo pipefail
           trap 'rm -f /tmp/env.decrypted /tmp/deploy-manifest.yml /tmp/sops-age-key.txt' EXIT
 
@@ -485,8 +519,14 @@ jobs:
               echo "ERROR: resolved_image_digest must be an immutable sha256 reference"
               exit 1
             fi
-            printf '\nSMTP2GRAPH_IMAGE_DIGEST=%s\n' "${RESOLVED_IMAGE_DIGEST}" >> /tmp/env.decrypted
-            chmod 600 /tmp/env.decrypted
+            updated_env=$(mktemp /tmp/env.decrypted.XXXXXX)
+            awk -v digest="${RESOLVED_IMAGE_DIGEST}" '
+              /^SMTP2GRAPH_IMAGE_DIGEST=/ { if (!replaced) { print "SMTP2GRAPH_IMAGE_DIGEST=" digest; replaced=1 }; next }
+              { print }
+              END { if (!replaced) print "SMTP2GRAPH_IMAGE_DIGEST=" digest }
+            ' /tmp/env.decrypted > "${updated_env}"
+            chmod 600 "${updated_env}"
+            mv "${updated_env}" /tmp/env.decrypted
           fi
 
           if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq "${DEPLOY_PROJECT_DIR}"; then
@@ -525,8 +565,10 @@ jobs:
             ORCHESTRATOR_MODE=swarm \
             ORCHESTRATOR_ENV_FILE=/tmp/env.decrypted \
             ENVIRONMENT_NAME="${ENVIRONMENT_NAME}" \
+            DEPLOYMENT_RELEASE_TAG="${DEPLOYMENT_RELEASE_TAG}" \
+            DECLARED_DEPLOY_REF="${DEPLOY_REF}" \
+            APPROVAL_CONTEXT="${APPROVAL_CONTEXT}" \
             INFRA_REPO_PATH="${INFRA_REPO_PATH}" \
-            SOPS_AGE_KEY="$(cat /tmp/sops-age-key.txt)" \
             bash "${ORCHESTRATION_SCRIPT_PATH}"
           else
             echo "No orchestration script found at '${ORCHESTRATION_SCRIPT_PATH:-}', fallback to default swarm deploy"

@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ''
+      deployment_release_tag:
+        description: 'Опційний vX.Y.Z tag, required only by a production deployment contract'
+        required: false
+        type: string
+        default: ''
       control_plane_sha:
         description: 'Опційний exact control-plane SHA для release evidence і remote checkout'
         required: false
@@ -59,6 +64,11 @@ on:
         default: ''
       declared_deploy_ref:
         description: 'Опційний exact Git SHA для remote checkout'
+        required: false
+        type: string
+        default: ''
+      approval_context:
+        description: 'Опційний reviewed approval identifier for a production deployment contract'
         required: false
         type: string
         default: ''
@@ -130,9 +140,11 @@ jobs:
       orchestration_script_path: ${{ inputs.orchestration_script_path }}
       infra_repo_path: ${{ inputs.infra_repo_path }}
       release_tag: ${{ inputs.release_tag }}
+      deployment_release_tag: ${{ inputs.deployment_release_tag }}
       control_plane_sha: ${{ inputs.control_plane_sha }}
       resolved_image_digest: ${{ inputs.resolved_image_digest }}
       declared_deploy_ref: ${{ inputs.declared_deploy_ref }}
+      approval_context: ${{ inputs.approval_context }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
