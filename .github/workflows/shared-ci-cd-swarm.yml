@@ -27,6 +27,11 @@ on:
         description: 'Назва Docker-образу (наприклад, my-app)'
         required: false
         type: string
+      validation_script_path:
+        description: 'Опційний relative path до caller-specific validation script'
+        required: false
+        type: string
+        default: ''
       orchestration_script_path:
         description: 'Опційний шлях до локального скрипта-оркестратора в репозиторії (виконується на сервері перед deploy)'
         required: false
@@ -111,6 +116,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Run caller validation script
+        if: inputs.validation_script_path != ''
+        env:
+          VALIDATION_SCRIPT_PATH: ${{ inputs.validation_script_path }}
+        run: |
+          set -euo pipefail
+          [[ "${VALIDATION_SCRIPT_PATH}" != /* && "${VALIDATION_SCRIPT_PATH}" != *'..'* ]] || { echo 'ERROR: validation_script_path must be a safe relative path'; exit 1; }
+          [[ -f "${VALIDATION_SCRIPT_PATH}" && ! -L "${VALIDATION_SCRIPT_PATH}" ]] || { echo 'ERROR: validation script is missing or unsafe'; exit 1; }
+          bash "${VALIDATION_SCRIPT_PATH}"
+
+      - name: Run Actionlint
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" rhysd/actionlint@sha256:f70fe2789baa8fe077577f1de2e0951171c62913ac4efcadcf7603bcf5008ab5 -color /repo/.github/workflows/*.yml
 
       - name: Run Hadolint on Dockerfiles
         run: |

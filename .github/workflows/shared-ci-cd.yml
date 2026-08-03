@@ -32,6 +32,11 @@ on:
         description: 'Назва Docker-образу (наприклад, my-app)'
         required: false
         type: string
+      validation_script_path:
+        description: 'Опційний relative path до caller-specific validation script'
+        required: false
+        type: string
+        default: ''
       orchestration_script_path:
         description: 'Опційний шлях до локального скрипта-оркестратора в репозиторії (виконується на сервері перед deploy)'
         required: false
@@ -137,6 +142,7 @@ jobs:
       build_and_push_docker: ${{ inputs.build_and_push_docker }}
       push_docker_image: ${{ inputs.push_docker_image }}
       docker_image_name: ${{ inputs.docker_image_name }}
+      validation_script_path: ${{ inputs.validation_script_path }}
       orchestration_script_path: ${{ inputs.orchestration_script_path }}
       infra_repo_path: ${{ inputs.infra_repo_path }}
       release_tag: ${{ inputs.release_tag }}
