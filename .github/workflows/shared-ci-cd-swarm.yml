@@ -128,7 +128,7 @@ jobs:
           bash "${VALIDATION_SCRIPT_PATH}"
 
       - name: Run Actionlint
-        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" rhysd/actionlint@sha256:f70fe2789baa8fe077577f1de2e0951171c62913ac4efcadcf7603bcf5008ab5 -color /repo/.github/workflows/*.yml
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@sha256:f70fe2789baa8fe077577f1de2e0951171c62913ac4efcadcf7603bcf5008ab5 -color
 
       - name: Run Hadolint on Dockerfiles
         run: |
