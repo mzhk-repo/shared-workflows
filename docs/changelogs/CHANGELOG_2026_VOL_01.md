@@ -266,3 +266,11 @@
 - **Verification:** `yaml.safe_load` успішно парсить `/opt/shared-workflows/.github/workflows/shared-ci-cd-swarm.yml` (`YAML_OK`); `git diff --check` проходить без whitespace-помилок.
 - **Risks:** Для repo з іншим owner потрібне passwordless sudo для deploy-користувача на виконання git від імені власника repo; workflow не змінює ownership/chmod/ACL автоматично.
 - **Rollback:** Прибрати `run_repo_git()` і повернути прямі `git fetch`/`git checkout` від deploy-користувача..
+
+## 2026-08-06 — Phase 8 refinement (`/opt/shared-workflows`): видалення commit digest SHA та уніфікація версійних тегів actions vX.X.X у shared workflows
+
+- **Context:** У workflows репозиторію `/opt/shared-workflows` залишалися неуніфіковані теги дій та digest SHA; потрібно було перевірити `.github/workflows/shared-ci-cd-swarm.yml` на відсутність digest SHA, переконатися в наявності версійних тегів `vX.X.X` та уніфікувати виклики інструментів без дублювання.
+- **Change:** У `.github/workflows/shared-ci-cd-swarm.yml`, `.github/workflows/shared-ci-cd-compose.yml` та `.github/workflows/shared-code-delivery.yml` виправлено та стандартизовано всі Action-посилання з digest SHA та застарілих тегів/`:latest` на уніфіковані теги `vX.X.X` (зокрема `actions/checkout@v7.0.1`, `hadolint/hadolint@v2.15.1`, `zricethezav/gitleaks@v8.30.1`, `actions/dependency-review-action@v5.0.0`, `aquasecurity/trivy-action@v0.36.0`, `docker/login-action@v4.6.0`, `docker/metadata-action@v6.2.0`, `docker/build-push-action@v7.3.0`, `tailscale/github-action@v4.1.3`). Оновлено `tests/test-shared-ci-cd-swarm-contract.sh` на використання стандартного `grep`.
+- **Verification:** `python3` (`yaml.safe_load`) підтвердив синтаксичну валідність усіх workflow файлів (`ALL YAML VALID`); контрактний тест `tests/test-shared-ci-cd-swarm-contract.sh` виконано успішно (`PASS`).
+- **Risks:** Фіксовані теги `vX.X.X` гарантують стабільність виконання CI/CD pipelines; оновлення версій дій тепер має відбуватися свідомо через перевірені теги.
+- **Rollback:** Відкотити зміни в `.github/workflows/` та `tests/` до попередніх ревізій через `git checkout`.

@@ -17,16 +17,16 @@ assert inputs['deployment_release_tag']['required'] is False
 assert inputs['approval_context']['required'] is False
 PY
 
-rg -q 'updated_env=\$\(mktemp /tmp/env\.decrypted\.XXXXXX\)' "$workflow"
-rg -q 'SMTP2GRAPH_IMAGE_DIGEST=" digest' "$workflow"
-rg -q 'production deploy requires resolved_image_digest' "$workflow"
-rg -q 'DEPLOYMENT_RELEASE_TAG="\$\{DEPLOYMENT_RELEASE_TAG\}"' "$workflow"
-rg -q 'format: json' "$workflow"
-rg -q 'output: trivy-\$\{\{ inputs.release_tag \}\}\.json' "$workflow"
-rg -q 'format: cyclonedx-json' "$workflow"
-rg -q '! gh release view "\$\{RELEASE_TAG\}"' "$workflow"
-rg -q 'name: Publish immutable release evidence' "$workflow"
-if rg -q 'SOPS_AGE_KEY="\$\(cat /tmp/sops-age-key\.txt\)"' "$workflow"; then
+grep -q 'updated_env=\$(mktemp /tmp/env\.decrypted\.XXXXXX)' "$workflow"
+grep -q 'SMTP2GRAPH_IMAGE_DIGEST=" digest' "$workflow"
+grep -q 'production deploy requires resolved_image_digest' "$workflow"
+grep -q 'DEPLOYMENT_RELEASE_TAG="${DEPLOYMENT_RELEASE_TAG}"' "$workflow"
+grep -q 'format: json' "$workflow"
+grep -q 'output: trivy-\${{ inputs.release_tag }}\.json' "$workflow"
+grep -q 'format: cyclonedx-json' "$workflow"
+grep -q '! gh release view "${RELEASE_TAG}"' "$workflow"
+grep -q 'name: Publish immutable release evidence' "$workflow"
+if grep -q 'SOPS_AGE_KEY="$(cat /tmp/sops-age-key\.txt)"' "$workflow"; then
     printf 'ERROR: remote orchestration unexpectedly receives the SOPS age private key.\n' >&2
     exit 1
 fi

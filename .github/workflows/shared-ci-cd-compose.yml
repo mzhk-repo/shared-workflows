@@ -72,7 +72,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -86,7 +86,7 @@ jobs:
           fi
           for file in "${files[@]}"; do
             echo "Linting $file"
-            docker run --rm -i hadolint/hadolint:latest hadolint - < "$file"
+            docker run --rm -i hadolint/hadolint@v2.15.1 hadolint - < "$file"
           done
 
       - name: Run Gitleaks
@@ -97,15 +97,15 @@ jobs:
           fi
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks:latest \
+            zricethezav/gitleaks@v8.30.1 \
             detect --source=/repo --redact -v --exit-code=1 $config_arg
 
       - name: Dependency review
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5.0.0
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -157,7 +157,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: inputs.build_and_push_docker == true && (inputs.deploy || inputs.push_docker_image)
-        uses: docker/login-action@v4.0.0
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -166,7 +166,7 @@ jobs:
       - name: Extract Docker metadata
         if: inputs.build_and_push_docker == true
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}
           tags: |
@@ -177,7 +177,7 @@ jobs:
 
       - name: Build and push Docker image
         if: inputs.build_and_push_docker == true
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           push: ${{ inputs.deploy || inputs.push_docker_image }}
@@ -196,7 +196,7 @@ jobs:
     environment: ${{ inputs.environment_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
       - name: Validate required secrets
         env:
@@ -235,7 +235,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v4.1.2
+        uses: tailscale/github-action@v4.1.3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}

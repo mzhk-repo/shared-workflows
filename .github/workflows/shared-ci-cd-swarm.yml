@@ -112,7 +112,7 @@ jobs:
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -128,7 +128,7 @@ jobs:
           bash "${VALIDATION_SCRIPT_PATH}"
 
       - name: Run Actionlint
-        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@sha256:f70fe2789baa8fe077577f1de2e0951171c62913ac4efcadcf7603bcf5008ab5 -color
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@v1.7.12 -color
 
       - name: Run Hadolint on Dockerfiles
         run: |
@@ -140,7 +140,7 @@ jobs:
           fi
           for file in "${files[@]}"; do
             echo "Linting $file"
-            docker run --rm -i hadolint/hadolint@sha256:9259e253a4e299b50c92006149dd3a171c7ea3c5bd36f060022b5d2c1ff0fbbe hadolint - < "$file"
+            docker run --rm -i hadolint/hadolint@v2.15.1 hadolint - < "$file"
           done
 
       - name: Run Gitleaks
@@ -151,15 +151,15 @@ jobs:
           fi
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks@sha256:bf00b5e039f0fad4b32935dc5ec1e358f227ccd097bcb64b971f0331072fe2ae \
+            zricethezav/gitleaks@v8.30.1 \
             detect --source=/repo --redact -v --exit-code=1 $config_arg
 
       - name: Dependency review
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        uses: actions/dependency-review-action@v5.0.0
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload Trivy report artifact
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: trivy-report-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.environment_name }}
           path: trivy-report.txt
@@ -213,7 +213,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: inputs.build_and_push_docker == true && (inputs.deploy || inputs.push_docker_image)
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -222,7 +222,7 @@ jobs:
       - name: Extract Docker metadata
         if: inputs.build_and_push_docker == true
         id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ inputs.docker_image_name }}
           tags: |
@@ -234,7 +234,7 @@ jobs:
       - name: Build and push Docker image
         id: build
         if: inputs.build_and_push_docker == true
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           push: ${{ inputs.deploy || inputs.push_docker_image }}
@@ -250,7 +250,7 @@ jobs:
       contents: write
       packages: read
     steps:
-      - uses: actions/checkout@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Validate release metadata
@@ -277,7 +277,7 @@ jobs:
           set -euo pipefail
           printf 'reference=ghcr.io/%s/%s@%s\n' "${IMAGE_OWNER}" "${IMAGE_NAME}" "${DIGEST}" >> "$GITHUB_OUTPUT"
       - name: Generate exact-digest Trivy report
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image.outputs.reference }}
           format: json
@@ -285,7 +285,7 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '0'
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@v0.24.0
         with:
           image: ${{ steps.image.outputs.reference }}
           format: cyclonedx-json
@@ -308,7 +308,7 @@ jobs:
           set -euo pipefail
           ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1
       - name: Publish immutable release evidence
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@v3.0.2
         with:
           tag_name: ${{ inputs.release_tag }}
           generate_release_notes: false
@@ -330,7 +330,7 @@ jobs:
     environment: ${{ inputs.environment_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -396,7 +396,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
       - name: Connect to Tailscale
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.2
+        uses: tailscale/github-action@v4.1.3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -423,11 +423,11 @@ jobs:
       - name: Install SOPS and age
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64 -o /tmp/sops
+          curl -fsSL https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64 -o /tmp/sops
           chmod +x /tmp/sops
           sudo mv /tmp/sops /usr/local/bin/sops
 
-          curl -fsSL https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz -o /tmp/age.tar.gz
+          curl -fsSL https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz -o /tmp/age.tar.gz
           tar -xzf /tmp/age.tar.gz -C /tmp
           sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
           rm -rf /tmp/age /tmp/age.tar.gz
