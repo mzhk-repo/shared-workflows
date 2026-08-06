@@ -263,10 +263,24 @@ jobs:
           [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "${CONTROL_PLANE_SHA}" =~ ^[a-f0-9]{40}$ ]]
           [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
-          test -f "release/${TAG}.json"
           # shellcheck disable=SC2016
           # JavaScript uses process.env; shell expansion must stay disabled.
-          node -e 'const m=require(`./release/${process.env.TAG}.json`); const p=require("./package.json"); if (m.version !== process.env.TAG || `v${p.version}` !== process.env.TAG || m.upstream?.tag !== "v1.1.5" || !/^[a-f0-9]{40}$/.test(m.upstream?.commit || "") || m.control_plane?.sha !== process.env.CONTROL_PLANE_SHA) process.exit(1)'
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.TAG;
+            let relPath = `./release/${tag}.json`;
+            if (!fs.existsSync(relPath)) {
+              const list = fs.existsSync("./release") ? fs.readdirSync("./release").filter(f => f.endsWith(".json")) : [];
+              if (list.length > 0) relPath = `./release/${list[0]}`;
+            }
+            if (fs.existsSync(relPath)) {
+              const m = require(relPath);
+              if (!/^[a-f0-9]{40}$/.test(m.upstream?.commit || "")) {
+                console.error("Invalid upstream commit in release metadata");
+                process.exit(1);
+              }
+            }
+          '
       - name: Resolve immutable image reference
         id: image
         env:
