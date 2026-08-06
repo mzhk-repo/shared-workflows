@@ -128,7 +128,7 @@ jobs:
           bash "${VALIDATION_SCRIPT_PATH}"
 
       - name: Run Actionlint
-        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint@v1.7.12 -color
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint:1.7.12 -color
 
       - name: Run Hadolint on Dockerfiles
         run: |
@@ -140,7 +140,7 @@ jobs:
           fi
           for file in "${files[@]}"; do
             echo "Linting $file"
-            docker run --rm -i hadolint/hadolint@v2.15.1 hadolint - < "$file"
+            docker run --rm -i hadolint/hadolint:v2.15.1 hadolint - < "$file"
           done
 
       - name: Run Gitleaks
@@ -151,7 +151,7 @@ jobs:
           fi
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
-            zricethezav/gitleaks@v8.30.1 \
+            zricethezav/gitleaks:v8.30.1 \
             detect --source=/repo --redact -v --exit-code=1 $config_arg
 
       - name: Dependency review
