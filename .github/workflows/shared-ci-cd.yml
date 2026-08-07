@@ -114,6 +114,7 @@ jobs:
   legacy-compose:
     if: inputs.use_ansible == false
     uses: ./.github/workflows/shared-ci-cd-compose.yml
+    secrets: inherit
     with:
       environment_name: ${{ inputs.environment_name }}
       deploy: ${{ inputs.deploy }}
@@ -136,6 +137,7 @@ jobs:
   swarm-sops:
     if: inputs.use_ansible == true
     uses: ./.github/workflows/shared-ci-cd-swarm.yml
+    secrets: inherit
     with:
       environment_name: ${{ inputs.environment_name }}
       deploy: ${{ inputs.deploy }}
