@@ -537,7 +537,7 @@ jobs:
 
           ssh -p "${ssh_port}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
             "${SERVER_USER}@${SERVER_HOST}" \
-            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' RESOLVED_IMAGE_DIGEST='${RESOLVED_IMAGE_DIGEST}' DEPLOYMENT_RELEASE_TAG='${DEPLOYMENT_RELEASE_TAG}' APPROVAL_CONTEXT='${APPROVAL_CONTEXT}' bash -s" <<'EOF'
+            "DEPLOY_REF='${DEPLOY_REF}' DEPLOY_PROJECT_DIR='${DEPLOY_PROJECT_DIR}' ENVIRONMENT_NAME='${ENVIRONMENT_NAME}' ORCHESTRATION_SCRIPT_PATH='${ORCHESTRATION_SCRIPT_PATH}' INFRA_REPO_PATH='${INFRA_REPO_PATH}' RESOLVED_IMAGE_DIGEST='${RESOLVED_IMAGE_DIGEST}' DEPLOYMENT_RELEASE_TAG='${DEPLOYMENT_RELEASE_TAG}' APPROVAL_CONTEXT='${APPROVAL_CONTEXT}' SOPS_AGE_KEY='${SOPS_AGE_KEY}' bash -s" <<'EOF'
           set -euo pipefail
           trap 'rm -f /tmp/env.decrypted /tmp/deploy-manifest.yml /tmp/sops-age-key.txt' EXIT
 
@@ -608,6 +608,8 @@ jobs:
             DECLARED_DEPLOY_REF="${DEPLOY_REF}" \
             APPROVAL_CONTEXT="${APPROVAL_CONTEXT}" \
             INFRA_REPO_PATH="${INFRA_REPO_PATH}" \
+            SOPS_AGE_KEY="${SOPS_AGE_KEY:-}" \
+            SOPS_AGE_KEY_FILE=/tmp/sops-age-key.txt \
             bash "${ORCHESTRATION_SCRIPT_PATH}"
           else
             echo "No orchestration script found at '${ORCHESTRATION_SCRIPT_PATH:-}', fallback to default swarm deploy"
