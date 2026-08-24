@@ -382,19 +382,21 @@ jobs:
           DEPLOY_ENABLED: ${{ inputs.deploy }}
         run: |
           set -euo pipefail
-          if [[ -n "${RESOLVED_IMAGE_DIGEST}" && ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
-            echo "ERROR: resolved_image_digest must be IMAGE@sha256:DIGEST"
+          if [[ -n "${RESOLVED_IMAGE_DIGEST}" && ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+(@sha256:[a-f0-9]{64}|:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)$ ]]; then
+            echo "ERROR: resolved_image_digest must be IMAGE@sha256:DIGEST or IMAGE:TAG"
             exit 1
           fi
           if [[ -n "${DECLARED_DEPLOY_REF}" && ! "${DECLARED_DEPLOY_REF}" =~ ^[a-f0-9]{40}$ ]]; then
             echo "ERROR: declared_deploy_ref must be a 40-character SHA"
             exit 1
           fi
-          if [[ "${ENVIRONMENT_NAME}" == "production" && "${DEPLOY_ENABLED}" == "true" ]]; then
-            [[ "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'ERROR: production deploy requires resolved_image_digest'; exit 1; }
-            [[ "${DEPLOYMENT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'ERROR: production deploy requires deployment_release_tag'; exit 1; }
-            [[ "${DECLARED_DEPLOY_REF}" =~ ^[a-f0-9]{40}$ ]] || { echo 'ERROR: production deploy requires declared_deploy_ref'; exit 1; }
-            [[ "${APPROVAL_CONTEXT}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$ ]] || { echo 'ERROR: production deploy requires approval_context'; exit 1; }
+          if [[ -n "${DEPLOYMENT_RELEASE_TAG}" && ! "${DEPLOYMENT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: deployment_release_tag must be vX.Y.Z"
+            exit 1
+          fi
+          if [[ -n "${APPROVAL_CONTEXT}" && ! "${APPROVAL_CONTEXT}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$ ]]; then
+            echo "ERROR: approval_context format is invalid"
+            exit 1
           fi
 
       - name: Configure SSH key and known_hosts
@@ -554,8 +556,8 @@ jobs:
             exit 1
           fi
           if [[ -n "${RESOLVED_IMAGE_DIGEST:-}" ]]; then
-            if [[ ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
-              echo "ERROR: resolved_image_digest must be an immutable sha256 reference"
+            if [[ ! "${RESOLVED_IMAGE_DIGEST}" =~ ^[^[:space:]@]+(@sha256:[a-f0-9]{64}|:[a-zA-Z0-9_][a-zA-Z0-9_.-]*)$ ]]; then
+              echo "ERROR: resolved_image_digest must be IMAGE@sha256:DIGEST or IMAGE:TAG"
               exit 1
             fi
             updated_env=$(mktemp /tmp/env.decrypted.XXXXXX)

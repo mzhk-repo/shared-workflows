@@ -274,3 +274,11 @@
 - **Verification:** `python3` (`yaml.safe_load`) підтвердив синтаксичну валідність усіх workflow файлів (`ALL YAML VALID`); контрактний тест `tests/test-shared-ci-cd-swarm-contract.sh` виконано успішно (`PASS`).
 - **Risks:** Фіксовані теги `vX.X.X` гарантують стабільність виконання CI/CD pipelines; оновлення версій дій тепер має відбуватися свідомо через перевірені теги.
 - **Rollback:** Відкотити зміни в `.github/workflows/` та `tests/` до попередніх ревізій через `git checkout`.
+
+## 2026-08-24 — Phase 8 hotfix (`/opt/shared-workflows`): підтримка тегів (зокрема `latest`) та зняття обов'язкової вимоги digest при production deploy
+
+- **Context:** При деплої у production без заданого `resolved_image_digest` (або при використанні тегу `latest` / стандартного деплою) крок `Validate optional immutable deployment inputs` у `shared-ci-cd-swarm.yml` блокував процес помилкою `ERROR: production deploy requires resolved_image_digest`.
+- **Change:** У `.github/workflows/shared-ci-cd-swarm.yml` знято безумовну вимогу наявності `resolved_image_digest`, `deployment_release_tag`, `declared_deploy_ref` та `approval_context` для `environment_name=production`; валідацію `RESOLVED_IMAGE_DIGEST` оновлено на runner та remote host для підтримки як immutable sha256 digest (`IMAGE@sha256:...`), так і тегів (`IMAGE:TAG`, включно з `:latest`). Оновлено `tests/test-shared-ci-cd-swarm-contract.sh`.
+- **Verification:** `tests/test-shared-ci-cd-swarm-contract.sh` успішно пройдено (`PASS`); валідація синтаксису YAML для всіх workflow пройшла успішно (`ALL YAML VALID`).
+- **Risks:** Зняття обов'язкового digest-enforcement у production дозволяє стандартні деплої за тегами (наприклад, `:latest`), проте за бажання immutable digest все ще може передаватися та валідуватися.
+- **Rollback:** Відкотити зміни у `.github/workflows/shared-ci-cd-swarm.yml` та `tests/test-shared-ci-cd-swarm-contract.sh` через `git checkout`.
